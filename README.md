@@ -1,1 +1,1 @@
-# AWS Datapipeline Bronze, Silver and Gold Datawarehouse 
+# AWS Datapipeline in Mandellion Architecture
