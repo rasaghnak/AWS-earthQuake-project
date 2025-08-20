@@ -1,0 +1,61 @@
+import os
+import csv
+import io
+import datetime
+from collections import Counter
+import boto3
+
+s3 = boto3.client('s3')
+
+# Environment
+BUCKET = os.environ['BUCKET']  # e.g., mdn-demo-datalake-<your-unique>-us-east-1
+SILVER_PREFIX = os.environ.get('SILVER_PREFIX', 'silver/webdata')
+GOLD_PREFIX = os.environ.get('GOLD_PREFIX', 'gold/webdata_daily_metrics')
+
+def _num_or_big(x):
+    try:
+        return int(x)
+    except Exception:
+        return 10**12
+
+def lambda_handler(event, context):
+    """
+    Reads Silver CSV for a given ingest_date and writes aggregated counts to Gold.
+    Accepts event: {"ingest_date": "YYYY-MM-DD"}; defaults to today UTC if absent.
+    Handler path: lambda_function.lambda_handler
+    """
+    ingest_date = (event.get("ingest_date")
+                   if isinstance(event, dict) else None) or datetime.datetime.utcnow().strftime('%Y-%m-%d')
+    silver_key = f"{SILVER_PREFIX}/ingest_date={ingest_date}/data.csv"
+
+    # Read Silver CSV
+    obj = s3.get_object(Bucket=BUCKET, Key=silver_key)
+    content = obj['Body'].read().decode('utf-8').splitlines()
+    reader = csv.DictReader(content)
+
+    counts = Counter()
+    for row in reader:
+        uid = row.get("user_id")
+        counts[uid] += 1
+
+    # Write Gold metrics CSV
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["user_id", "post_count", "ingest_date"])
+    for uid, c in sorted(counts.items(), key=lambda kv: _num_or_big((kv[0] or ""))):
+        w.writerow([uid, c, ingest_date])
+
+    gold_key = f"{GOLD_PREFIX}/ingest_date={ingest_date}/metrics.csv"
+    s3.put_object(
+        Bucket=BUCKET,
+        Key=gold_key,
+        Body=out.getvalue().encode('utf-8'),
+        ContentType='text/csv'
+    )
+
+    return {
+        "bucket": BUCKET,
+        "ingest_date": ingest_date,
+        "gold_key": gold_key,
+        "groups": len(counts)
+    }
