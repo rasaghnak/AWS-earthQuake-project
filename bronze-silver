@@ -1,0 +1,83 @@
+import os
+import json
+import csv
+import io
+import datetime
+import boto3
+from typing import List
+
+s3 = boto3.client('s3')
+
+# Environment
+BUCKET = os.environ['BUCKET']  # e.g., mdn-demo-datalake-<your-unique>-us-east-1
+BRONZE_PREFIX = os.environ.get('BRONZE_PREFIX', 'bronze/webdata')
+SILVER_PREFIX = os.environ.get('SILVER_PREFIX', 'silver/webdata')
+
+def _list_json_keys(bucket: str, prefix: str) -> List[str]:
+    keys = []
+    token = None
+    while True:
+        kwargs = {"Bucket": bucket, "Prefix": prefix}
+        if token:
+            kwargs["ContinuationToken"] = token
+        resp = s3.list_objects_v2(**kwargs)
+        for item in resp.get("Contents", []):
+            key = item["Key"]
+            if key.endswith(".json"):
+                keys.append(key)
+        token = resp.get("NextContinuationToken")
+        if not token:
+            break
+    return keys
+
+def lambda_handler(event, context):
+    """
+    Reads Bronze JSON for a given ingest_date and writes cleaned CSV to Silver.
+    Accepts event: {"ingest_date": "YYYY-MM-DD"}; defaults to today UTC if absent.
+    Handler path: lambda_function.lambda_handler
+    """
+    ingest_date = (event.get("ingest_date")
+                   if isinstance(event, dict) else None) or datetime.datetime.utcnow().strftime('%Y-%m-%d')
+    bronze_partition = f"{BRONZE_PREFIX}/ingest_date={ingest_date}/"
+
+    keys = _list_json_keys(BUCKET, bronze_partition)
+    rows = []
+
+    for k in keys:
+        obj = s3.get_object(Bucket=BUCKET, Key=k)
+        payload = json.loads(obj['Body'].read().decode('utf-8'))
+        if isinstance(payload, dict):
+            payload = [payload]
+        if not isinstance(payload, list):
+            continue
+
+        for r in payload:
+            rows.append({
+                "user_id": r.get("userId"),
+                "id": r.get("id"),
+                "title": (r.get("title") or "").strip(),
+                "body": (r.get("body") or "").strip(),
+            })
+
+    # Write CSV to Silver
+    out = io.StringIO()
+    writer = csv.DictWriter(out, fieldnames=["user_id", "id", "title", "body"])
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+
+    silver_key = f"{SILVER_PREFIX}/ingest_date={ingest_date}/data.csv"
+    s3.put_object(
+        Bucket=BUCKET,
+        Key=silver_key,
+        Body=out.getvalue().encode('utf-8'),
+        ContentType='text/csv'
+    )
+
+    return {
+        "bucket": BUCKET,
+        "ingest_date": ingest_date,
+        "silver_key": silver_key,
+        "rows": len(rows),
+        "bronze_files": len(keys)
+    }
