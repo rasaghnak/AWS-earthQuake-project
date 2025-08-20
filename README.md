@@ -1,1 +1,1 @@
-# AWS-earthQuake-project
+# AWS Datapipeline Bronze, Silver and Gold Datawarehouse 
