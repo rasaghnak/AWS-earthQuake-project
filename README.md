@@ -1,4 +1,4 @@
-# AWS Datapipeline in Mandellion Architecture
+# AWS Datapipeline in Medallion Architecture
 
 # AWS Medallion Data Pipeline Demo
 
